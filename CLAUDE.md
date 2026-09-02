@@ -37,6 +37,13 @@ Inside a container, `localhost` refers to the container itself, not the host mac
 
 This applies to all environment variables, configuration files, and code that references service hosts.
 
+**Shared network.** The two Compose projects share one Docker network named
+`streamtube`, which is what makes cross-stack service names resolve
+(`API_URL=http://nestjs-api:3000` from the frontend). `nestjs-project/compose.yaml`
+declares it (`networks.default.name: streamtube`); `next-frontend/compose.yaml`
+joins it with `external: true`. **Start `nestjs-project` first** — the frontend
+stack fails to start if the network does not exist yet.
+
 ## Working Principles
 
 - **Single Responsibility:** each module, service, and function should have a clear, focused responsibility. Re-evaluate adherence at every step — when a module starts owning logic or entities that are not its own (e.g., a service creating an entity from another domain), extract it immediately into the proper module instead of deferring to a later corrective task.
