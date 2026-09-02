@@ -34,6 +34,22 @@ docker compose exec nestjs-api npm run start:dev
 Services:
 - `nestjs-api` — NestJS API, port `3000`
 - `db` — PostgreSQL 17, port `5432`, database `streamtube`, user/password `streamtube`
+- `mailpit` — SMTP sink on `1025`, web UI on http://localhost:8025
+
+**Shared network.** This Compose project owns the `streamtube` network
+(`networks.default.name: streamtube`); `next-frontend/compose.yaml` joins it as
+`external: true`. Consequences:
+
+- Start **this** stack before `next-frontend`, or its `docker compose up` fails
+  with a missing-network error.
+- The frontend reaches the API as `http://nestjs-api:3000` — service name, never
+  `localhost` or `host.docker.internal`.
+- `docker compose down` here also tries to remove the network. With
+  `next-frontend` still up that removal fails harmlessly
+  (`Network streamtube  Resource is still in use`) and the network survives.
+- Once both stacks are down the network can linger unused — `docker network rm
+  streamtube` clears it. Starting `next-frontend` without it fails loudly with
+  `network streamtube declared as external, but could not be found`.
 
 All verification and teardown commands run on the **host machine**:
 
@@ -48,7 +64,8 @@ docker compose exec db pg_isready -U streamtube
 docker compose logs nestjs-api
 docker compose logs db
 
-# Tear down the entire environment
+# Tear down the entire environment (bring next-frontend down first — see
+# "Shared network" above)
 docker compose down
 ```
 

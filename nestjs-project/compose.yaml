@@ -33,4 +33,10 @@ services:
       - "1025:1025"
       - "8025:8025"
 
-
+# Shared network for the whole StreamTube stack. This Compose project owns it;
+# next-frontend/compose.yaml joins the same network as `external`, which lets the
+# frontend reach the API by its Compose service name (http://nestjs-api:3000).
+# Consequence: start this stack before next-frontend.
+networks:
+  default:
+    name: streamtube
