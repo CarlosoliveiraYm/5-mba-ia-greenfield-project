@@ -21,6 +21,8 @@ services:
       - POSTGRES_USER=streamtube
       - POSTGRES_PASSWORD=streamtube
       - POSTGRES_DB=streamtube
+    volumes:
+      - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U streamtube"]
       interval: 5s
@@ -32,6 +34,13 @@ services:
     ports:
       - "1025:1025"
       - "8025:8025"
+
+# Named volume so the database survives `docker compose down`. Without it Postgres
+# wrote to a throwaway anonymous volume and every teardown silently emptied the
+# database, forcing a `npm run migration:run` on the next startup.
+# To wipe it on purpose: `docker compose down -v`.
+volumes:
+  db-data:
 
 # Shared network for the whole StreamTube stack. This Compose project owns it;
 # next-frontend/compose.yaml joins the same network as `external`, which lets the
