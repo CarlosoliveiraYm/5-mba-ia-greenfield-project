@@ -1,0 +1,54 @@
+# Drift gate for the OpenAPI contract (next-frontend-openapi-typing/TD-03, Option C).
+#
+# `nestjs-project/openapi.json` is the canonical artifact; `next-frontend/openapi.json` is a
+# committed copy (TD-02, Option B) and `next-frontend/lib/api/types.gen.ts` is generated from
+# it. All three are committed, so a backend spec change that skips the sync + regen leaves the
+# frontend copies stale. This job reproduces both derived artifacts and fails if either moved.
+#
+# Both files MUST stay tracked by git: `git diff` ignores untracked paths, so listing an
+# ignored file here would make this job pass unconditionally.
+name: OpenAPI freshness
+
+on:
+  pull_request:
+  push:
+    branches: [main, dev]
+
+jobs:
+  freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: next-frontend/package-lock.json
+
+      # The CLI runs on the runner itself, not in a container: next-frontend/CLAUDE.md's
+      # "commands run inside the container" rule governs local development, where the host
+      # would otherwise diverge from the container. A CI runner is already the execution
+      # environment.
+      - name: Install next-frontend dependencies
+        working-directory: next-frontend
+        run: npm ci
+
+      - name: Sync openapi.json from nestjs-project
+        run: bash scripts/sync-openapi.sh
+
+      - name: Regenerate types from the spec
+        working-directory: next-frontend
+        run: npm run openapi:types
+
+      - name: Fail if either derived artifact is stale
+        run: |
+          if ! git diff --exit-code next-frontend/openapi.json next-frontend/lib/api/types.gen.ts; then
+            echo
+            echo "::error::The committed OpenAPI artifacts are stale relative to nestjs-project/openapi.json."
+            echo "Run this from the repo root, then commit the result:"
+            echo
+            echo "  bash scripts/sync-openapi.sh && (cd next-frontend && npm run openapi:types)"
+            echo
+            exit 1
+          fi
