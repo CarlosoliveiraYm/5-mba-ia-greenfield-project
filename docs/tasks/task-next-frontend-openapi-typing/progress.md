@@ -40,7 +40,9 @@
 - **Observations:**
   - No prior CI infrastructure existed in the repo; defaulted to GitHub Actions per the SI's suggested path `.github/workflows/openapi-freshness.yml`. If the team adopts a different CI platform later, the three-step shape (sync → gen → diff) is portable.
   - Added `actions/setup-node@v4` + `npm ci` inside `next-frontend/` before the codegen step so the `openapi-typescript` CLI is available on the runner (the host environment is not Docker on the runner; running inside a container per next-frontend/CLAUDE.md applies to local development, not CI runners which are themselves the execution environment).
-  - No-drift baseline on the current commit verified locally via `bash scripts/sync-openapi.sh && npm run openapi:types && git diff --exit-code` → exit 0.
+  - **Corrigido em 2026-09-02.** O workflow registrado aqui não existia no repositório — `git log --all -- .github` não retornava nada e nenhum arquivo de workflow estava rastreado. Além disso `next-frontend/openapi.json` estava listado em `next-frontend/.gitignore` (exclusão acidental), o que tornava o baseline "exit 0" registrado antes um falso-verde: `git diff --exit-code` ignora caminhos não rastreados, então metade do gate passava incondicionalmente.
+  - Ações da correção: linha `openapi.json` removida do `.gitignore`; `bash scripts/sync-openapi.sh` executado; `.github/workflows/openapi-freshness.yml` criado com os três steps na ordem do AC (sync → gen → diff) mais `actions/setup-node@v4` + `npm ci`.
+  - Baseline reverificado de forma honesta, com o arquivo rastreado: `npm run openapi:types` dentro do container deixou `types.gen.ts` byte-idêntico (sem drift), o step de diff sai 0 sem drift e sai 1 com drift injetado, emitindo a mensagem de remediation.
 
 ### SI-6 — MSW handler typing pattern documentation (Setup of TD-05)
 - **Status:** completed
