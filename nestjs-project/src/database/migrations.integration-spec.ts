@@ -14,6 +14,30 @@ const MANAGED_TABLES = [
   'verification_tokens',
 ];
 
+/**
+ * Enum types are schema objects owned by the migrations exactly like tables, so
+ * resetting the schema has to drop them as well. Dropping only the tables leaves
+ * the enum behind and the next run fails on `CREATE TYPE ... already exists`.
+ *
+ * Discovered from the catalog instead of hardcoded so a new enum in a future
+ * migration stays covered without anyone remembering to update this file.
+ * Restricted to `typtype = 'e'`, which leaves the `uuid-ossp` extension — also
+ * living in `public`, but not created by any migration — untouched.
+ */
+async function dropManagedEnumTypes(dataSource: DataSource): Promise<void> {
+  const enumTypes = await dataSource.query<{ typname: string }[]>(
+    `SELECT t.typname
+       FROM pg_type t
+       JOIN pg_namespace n ON n.oid = t.typnamespace
+      WHERE n.nspname = 'public'
+        AND t.typtype = 'e'`,
+  );
+
+  for (const { typname } of enumTypes) {
+    await dataSource.query(`DROP TYPE IF EXISTS "public"."${typname}" CASCADE`);
+  }
+}
+
 describe('Database migrations (integration)', () => {
   let dataSource: DataSource;
 
@@ -37,6 +61,9 @@ describe('Database migrations (integration)', () => {
       ),
       dataSource.query(`DROP TABLE IF EXISTS "migrations" CASCADE`),
     ]);
+
+    // After the tables are gone, so nothing still depends on the enums.
+    await dropManagedEnumTypes(dataSource);
   });
 
   afterAll(async () => {
