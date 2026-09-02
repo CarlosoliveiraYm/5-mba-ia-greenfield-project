@@ -65,8 +65,13 @@ docker compose logs nestjs-api
 docker compose logs db
 
 # Tear down the entire environment (bring next-frontend down first — see
-# "Shared network" above)
+# "Shared network" above). Database survives: it lives in the `db-data` named
+# volume, so migrations do NOT need to be re-run on the next startup.
 docker compose down
+
+# Tear down AND wipe the database (drops the `db-data` volume). After this the
+# next startup needs `npm run migration:run` again.
+docker compose down -v
 ```
 
 ## Commands
