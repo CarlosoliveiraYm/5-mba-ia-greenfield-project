@@ -3,8 +3,8 @@ kind: phase
 name: phase-03-upload
 sources_mtime:
   docs/project-plan.md: "2026-08-31T09:51:36-03:00"
-  docs/decisions/technical-decisions-phase-03-upload.md: "2026-09-02T14:24:17-03:00"
-  docs/phases/phase-02-auth/phase-02-auth.md: "2026-08-31T09:51:36-03:00"
+  docs/decisions/technical-decisions-phase-03-upload.md: "2026-09-02T19:22:09-03:00"
+  docs/phases/phase-02-auth/phase-02-auth.md: "2026-09-02T19:11:45-03:00"
 ---
 
 # Phase 03 — Upload e Processamento de Vídeos
