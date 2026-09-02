@@ -1,7 +1,7 @@
 ---
 scope_type: phase
 related_phases: [3]
-status: Finalized
+status: decided
 date: 2026-09-02
 scope_description: "Backend side of Phase 03 — object storage service, background job queue and video worker topology, resumable upload transport for files up to 10GB, draft pre-registration and processing state machine, FFmpeg metadata extraction and automatic thumbnail, unique public video URL, and streaming/download delivery. The upload UI (dropzone, progress bar, resume UX) is deferred to a `phase-03-upload-frontend` slice."
 ---
@@ -53,6 +53,17 @@ _Subprojects in scope:_
 
 **Decision:** A: MinIO container + AWS SDK v3
 
+**Revisions:**
+- 2026-09-02 — Two `S3Client` instances instead of one: `client` on `S3_ENDPOINT` (internal) for reads
+  and writes, `presignClient` on `S3_PUBLIC_ENDPOINT` for delivery URLs, plus a third access
+  path `getInternalPresignedUrl` for server-side consumers. Rationale: SigV4 signs the `Host`
+  header, so a URL signed for the browser-reachable host is invalid from inside the Docker
+  network and vice-versa — the worker's ffprobe needs the internal variant.
+- 2026-09-02 — Browser CORS is configured through MinIO's cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN`
+  (fed by a new `S3_CORS_ALLOW_ORIGIN` key), not per-bucket. Rationale: `mc cors set` is an
+  AIStor (paid) feature; the open-source image exposes no per-bucket CORS. The corresponding
+  con in TD-11 was corrected in the same pass.
+
 ---
 
 ## TD-02: Background Job Queue Infrastructure
@@ -68,7 +79,7 @@ _Subprojects in scope:_
 ### Option A: `pg-boss` on the existing PostgreSQL
 - `pg-boss@12` builds a job queue inside the project's Postgres using `SELECT ... FOR UPDATE SKIP LOCKED`, managing its own `pgboss` schema and migrations. Requires Node >= 22.12 (satisfied: Node 25.6). v12 exposes `retryLimit`/`retryBackoff`/`retryDelayMax`, `expireInSeconds`, `heartbeatSeconds` for long-running handlers, dead-letter queues, and `send()` accepting an existing connection.
 - **Pros:** No new container, no new backup/monitoring surface. Enqueue can run in the **same transaction** as the draft-video `INSERT`, so a committed draft always has a job and a rolled-back draft never leaves an orphan one — directly serving the "pré-cadastro como rascunho" capability. `heartbeatSeconds` handles handlers that run for minutes. Jobs are inspectable with plain SQL.
-- **Cons:** No official NestJS module — the DI wiring (module, `onModuleInit` worker registration, typed job payloads) is hand-rolled (~100 lines). `pg-boss` owns its own schema and runs its own migrations outside TypeORM's migration table, so two migration systems coexist in one database. Postgres is not a high-throughput broker and the `pgboss.job` table needs its retention settings tuned.
+- **Cons:** No official NestJS module — the DI wiring (module, `onModuleInit` worker registration, typed job payloads) is hand-rolled (~100 lines). `pg-boss` owns its own schema and runs its own migrations outside TypeORM's migration table, so two migration systems coexist in one database. Postgres is not a high-throughput broker and the `pgboss.job` table needs its retention settings tuned. `pg-boss@12` is also ESM-only (`"type": "module"`, no CJS export), so it carries the same CommonJS/Jest friction this document attributes only to `@tus/*` in TD-03 — that friction is therefore not a differentiator between this option and Option B.
 
 ### Option B: BullMQ + Redis (`@nestjs/bullmq`)
 - Redis joins Compose; `@nestjs/bullmq@12` provides first-party `@Processor`/`@OnWorkerEvent` decorators, DI-injected queues, and a mature dashboard ecosystem (Bull Board).
@@ -83,6 +94,19 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (`pg-boss`)** — the transactional enqueue is a genuine correctness win for the draft-then-process flow, and at this workload (a few long jobs, never a burst) the throughput ceiling that motivates Redis is nowhere near. The cost is a hand-rolled Nest module, which is bounded and one-off; the cost of Option B is a permanent extra container for a single consumer. If Redis later enters the stack for other reasons, the queue port keeps the migration contained.
 
 **Decision:** A (`pg-boss`)
+
+**Revisions:**
+- 2026-09-02 — Recorded that `pg-boss@12` is ESM-only, matching `@tus/*`; both are loaded through async
+  provider factories using a native dynamic import that bypasses Jest's CommonJS registry.
+  Rationale: the option's cons omitted this, which overstated the ESM advantage of `pg-boss`
+  over Option B (BullMQ). The choice stands on the transactional-enqueue argument alone.
+- 2026-09-02 — The transactional enqueue is placed at the tus `onUploadFinish` hook (`status →
+  processing` + `send()` in one transaction), not at draft creation. Rationale: under TD-09 the
+  draft row is inserted at `onUploadCreate`, minutes before the upload ends, so the
+  "draft INSERT + enqueue in one transaction" framing in this TD's pros does not describe the
+  actual flow; the transaction that matters is the one at finish.
+- 2026-09-02 — `send()`'s `db` option requires an adapter wrapping TypeORM: pg-boss expects
+  `executeSql → { rows }` while `EntityManager.query()` returns the row array directly.
 
 ---
 
@@ -115,6 +139,13 @@ _Subprojects in scope:_
 
 **Decision:** A (tus)
 
+**Revisions:**
+- 2026-09-02 — The S3 object key is decided by a `namingFunction` returning a flat `<uuid>.<ext>`, and
+  `generateUrl` / `getFileIdFromRequest` stay at their defaults. Rationale: in `@tus/server` the
+  upload id **is** the stored file name, and a key containing `/` would require overriding both
+  of those callbacks; a flat key keeps the surface minimal. `partSize` is 8 MiB (~1,280 parts
+  for a 10 GB file, inside the 10,000-part ceiling).
+
 ---
 
 ## TD-04: Upload Network Path Under the Strict BFF
@@ -145,6 +176,14 @@ _Subprojects in scope:_
 **Recommendation:** **Option A** — a narrow, documented exception scoped to a single path is cheaper than making the BFF a 10GB data pipe (Option B) or than accepting Option C's coupling to a hand-rolled protocol and its dev-endpoint signature trap. Record it explicitly as a deviation from `next-frontend-config-base/TD-03`, with the upload ticket (not the session cookie) as the credential so the BFF stays the only holder of the session.
 
 **Decision:** A: Documented BFF exception
+
+**Revisions:**
+- 2026-09-02 — The "short-lived upload ticket" named in Option A is specified as a JWT carrying
+  `{ sub, scope: 'upload', jti }`, signed with the existing access-token secret and expiring in
+  `UPLOAD_TICKET_EXPIRATION_HOURS` (2h), minted by `POST /videos/upload-ticket` and verified in
+  the tus hooks. Rationale: the option named the credential but never defined it. It carries no
+  `videoId` because the draft row is only created at `onUploadCreate`, after the ticket is
+  issued; per-chunk ownership is instead resolved by joining `uploadId → video.channel → user`.
 
 ---
 
@@ -208,6 +247,12 @@ _Subprojects in scope:_
 
 **Decision:** A: Direct 
 
+**Revisions:**
+- 2026-09-02 — Detecting whether the `moov` atom precedes `mdat` is implemented as a pure MP4
+  box-parsing helper (`hasFaststartLayout`), outside `FfmpegService`. Rationale: it is not an
+  FFmpeg invocation, and this option's premise is a wrapper holding exactly the commands the
+  phase needs — one ffprobe, one frame extraction, one stream-copy remux.
+
 ---
 
 ## TD-07: Post-Upload Normalization Policy
@@ -238,6 +283,13 @@ _Subprojects in scope:_
 **Recommendation:** **Option A** — it buys the streaming guarantee (the phase's stated requirement) for near-zero CPU, and leaves transcoding as a later, well-scoped addition if incompatible codecs ever become a real problem. Option B's cost is disproportionate for a phase whose deliverable is "streaming funcionando", not adaptive bitrate; Option C leaves a requirement to chance. Pair it with a whitelist of accepted codecs at validation time (TD-12) so unplayable sources fail loudly and early.
 
 **Decision:** A: Metadata-only
+
+**Revisions:**
+- 2026-09-02 — The faststart remux is promoted **onto the original storage key** (written to a
+  temporary key, then copied over and the temporary deleted), so a video always has exactly one
+  object and the download capability serves the same faststart file as streaming. Rationale: the
+  option acknowledged "writes a full second copy" without saying where it lands; keeping two
+  renditions would double storage for every remuxed upload with no consumer for the original.
 
 ---
 
@@ -301,6 +353,13 @@ _Subprojects in scope:_
 
 **Decision:** A: `status` enum column
 
+**Revisions:**
+- 2026-09-02 — The polling endpoint (`GET /videos/:publicId`) carries `@SkipThrottle()`. Rationale:
+  `phase-02-auth/TD-08`'s `ThrottlerGuard` is registered as an `APP_GUARD`, which is global
+  regardless of the declaring module, so the 10 req/min window would otherwise apply — and this
+  option's contract has the client polling every few seconds, which trips it mid-processing.
+  Every other `videos` endpoint stays throttled.
+
 ---
 
 ## TD-10: Public Video Identity and Unique URL
@@ -347,7 +406,7 @@ _Subprojects in scope:_
 ### Option A: Short-lived presigned GET URLs issued by the API, browser fetches storage directly
 - `GET /videos/:publicId/playback` performs the authorization check and returns a presigned URL valid for minutes; `<video src>` points at storage, which serves HTTP Range requests natively. Download uses the same mechanism with `response-content-disposition=attachment` and the original filename, on a separately scoped endpoint.
 - **Pros:** Byte traffic never touches Node — neither the API nor the BFF is in the data plane, which is what "sem impacto na performance" means at delivery time. Range requests, seeking and resumable downloads come free from the storage layer. Authorization stays server-side and re-checked on every URL issuance; short expiry bounds link leakage. Maps exactly onto the architecture diagram. One mechanism serves both capabilities via the disposition parameter.
-- **Cons:** Introduces a browser-reachable storage origin with the same dev endpoint/signature mismatch described in TD-04 (`minio:9000` inside Compose vs `localhost:9000` from the host) — the endpoint must be aliased consistently or signed against the external host. A leaked URL is valid until it expires. Bucket CORS must allow the Next.js origin.
+- **Cons:** Introduces a browser-reachable storage origin with the same dev endpoint/signature mismatch described in TD-04 (`minio:9000` inside Compose vs `localhost:9000` from the host) — the endpoint must be aliased consistently or signed against the external host. A leaked URL is valid until it expires. The browser origin must be allowed by MinIO's cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN` — per-bucket CORS (`mc cors set`) is an AIStor-only feature and is not available on the open-source image.
 
 ### Option B: API proxies the bytes with Range support
 - `GET /videos/:publicId/stream` reads the object from storage and pipes it to the response, forwarding `Range` and returning `206 Partial Content`; download is the same handler with `Content-Disposition: attachment`.
@@ -362,6 +421,15 @@ _Subprojects in scope:_
 **Recommendation:** **Option A** — it satisfies both capabilities with one mechanism, keeps 10GB files out of both Node processes, and is what the architecture diagram already prescribes. The dev endpoint mismatch is a one-time Compose/env fix (alias the storage host identically inside and outside the network) and is the same fix TD-04 may already require. Option B is the safer fallback if the endpoint aliasing proves painful; Option C is out of scope until adaptive bitrate is an actual requirement.
 
 **Decision:** A: Short-lived presigned 
+
+**Revisions:**
+- 2026-09-02 — Authorization for this phase is owner-only: the caller must be authenticated, own the
+  video's channel, and the video must be in `ready`. Rationale: the option's Context flagged that
+  authorization matters but decided no rule; public and `unlisted` visibility only arrive in
+  Phase 04 and anonymous watching in Phase 05, so nothing is reachable by a third party until
+  those land.
+- 2026-09-02 — Corrected the CORS clause in this option's cons: per-bucket CORS is AIStor-only, so the
+  browser origin is allowed via MinIO's cluster-wide `MINIO_API_CORS_ALLOW_ORIGIN` (see TD-01).
 
 ---
 
@@ -393,6 +461,16 @@ _Subprojects in scope:_
 **Recommendation:** **Option A** — declared-value rejection at create plus authoritative ffprobe validation after the fact is the standard tus pattern, and the second check costs nothing because the worker already probes the file. Adopt the bucket lifecycle rule from Option C as a belt-and-braces backstop for abandoned multipart parts. Suggested starting values to confirm at decision time: `UPLOAD_MAX_SIZE_BYTES=10737418240` (10GiB), accepted containers MP4/MOV/WebM/MKV with H.264/VP9/AV1 video, abandoned-upload expiry 24h, one concurrent in-flight upload per user.
 
 **Decision:** A: Enforce at the tus layer on create
+
+**Revisions:**
+- 2026-09-02 — The values this option left as "suggested starting values to confirm at decision time"
+  are confirmed: `UPLOAD_MAX_SIZE_BYTES=10737418240` (10 GiB); accepted containers MP4/MOV/WebM/
+  MKV; accepted video codecs H.264/VP9/AV1; abandoned-upload expiry 24h; one concurrent
+  in-flight upload per user. All become config keys, tunable per environment.
+- 2026-09-02 — The bucket-side backstop is an `AbortIncompleteMultipartUpload` lifecycle rule applied
+  with `mc ilm import` (`DaysAfterInitiation: 1`). Rationale: the borrowed "Option C lifecycle
+  rule" was not otherwise specified, and the nearest `mc ilm rule add` flag governs versioning
+  delete markers, not abandoned multipart uploads.
 
 ---
 
@@ -431,16 +509,16 @@ _Subprojects in scope:_
 
 | ID | Scope | Decision | Recommendation | Choice |
 |----|-------|----------|---------------|--------|
-| TD-01 | Backend | Object storage backend and client SDK | A — MinIO container + AWS SDK v3 | 
-| TD-02 | Backend | Background job queue infrastructure | A — `pg-boss` on the existing PostgreSQL | 
-| TD-03 | Cross-layer | Large-file upload transport protocol | A — tus (`@tus/server` + `@tus/s3-store`) | 
-| TD-04 | Cross-layer | Upload network path under the Strict BFF | A — documented BFF exception, browser → tus endpoint | 
-| TD-05 | Backend | Video worker runtime topology | A — separate Compose service, same codebase | 
-| TD-06 | Backend | FFmpeg/FFprobe invocation and binary provisioning | A — `spawn` wrapper + apt-installed binaries | 
-| TD-07 | Backend | Post-upload normalization policy | A — metadata-only + conditional faststart remux | 
-| TD-08 | Backend | Automatic thumbnail generation policy | A — one frame at a fixed offset | 
-| TD-09 | Cross-layer | Video state machine and processing-status contract | A — `status` enum + client polling | 
-| TD-10 | Cross-layer | Public video identity and unique URL | A — UUID PK + 11-char opaque public code | 
-| TD-11 | Cross-layer | Video delivery — streaming and download | A — short-lived presigned GET URLs | 
-| TD-12 | Backend | Upload limits, accepted formats, abandoned uploads | A — tus-level create checks + ffprobe re-validation | 
-| TD-13 | Backend | Video fixture strategy for the test suite | A — generate fixtures with FFmpeg at test setup | 
+| TD-01 | Backend | Object storage backend and client SDK | A — MinIO container + AWS SDK v3 | A — MinIO + AWS SDK v3 |
+| TD-02 | Backend | Background job queue infrastructure | A — `pg-boss` on the existing PostgreSQL | A — `pg-boss` |
+| TD-03 | Cross-layer | Large-file upload transport protocol | A — tus (`@tus/server` + `@tus/s3-store`) | A — tus |
+| TD-04 | Cross-layer | Upload network path under the Strict BFF | A — documented BFF exception, browser → tus endpoint | A — documented BFF exception |
+| TD-05 | Backend | Video worker runtime topology | A — separate Compose service, same codebase | A — separate Compose service |
+| TD-06 | Backend | FFmpeg/FFprobe invocation and binary provisioning | A — `spawn` wrapper + apt-installed binaries | A — direct `spawn` wrapper |
+| TD-07 | Backend | Post-upload normalization policy | A — metadata-only + conditional faststart remux | A — metadata-only + conditional remux |
+| TD-08 | Backend | Automatic thumbnail generation policy | A — one frame at a fixed offset | A — one frame at a fixed offset |
+| TD-09 | Cross-layer | Video state machine and processing-status contract | A — `status` enum + client polling | A — `status` enum + polling |
+| TD-10 | Cross-layer | Public video identity and unique URL | A — UUID PK + 11-char opaque public code | A — UUID PK + public short code |
+| TD-11 | Cross-layer | Video delivery — streaming and download | A — short-lived presigned GET URLs | A — short-lived presigned GET |
+| TD-12 | Backend | Upload limits, accepted formats, abandoned uploads | A — tus-level create checks + ffprobe re-validation | A — enforce at the tus layer on create |
+| TD-13 | Backend | Video fixture strategy for the test suite | A — generate fixtures with FFmpeg at test setup | A — generate fixtures |
