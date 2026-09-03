@@ -29,6 +29,9 @@ Only start `npm run dev` when the user **explicitly** asks to run the applicatio
 This project runs inside Docker. Always use the container for development:
 
 ```bash
+# Start the backend stack FIRST — it owns the shared `streamtube` network
+(cd ../nestjs-project && docker compose up -d)
+
 # Start container (from next-frontend/)
 docker compose up -d
 
@@ -134,7 +137,7 @@ Source of decisions: `docs/decisions/technical-decisions-next-frontend-openapi-t
 - `lib/env.ts` is the **source of truth** for environment variable reads in `next-frontend/`.
 - See `.env.example` for the canonical key set and `lib/env.ts` for the `createEnv({ server, client, shared, ... })` schema.
 
-The concrete value of `API_URL` depends on Docker Compose topology (e.g., `http://nestjs-api:3000` on a shared Compose network vs `http://host.docker.internal:3000` from a separate stack). The stacks are currently separate — networking integration is deferred to its own infra task; in the meantime, `.env.local` carries whichever value the local environment can reach.
+Both Compose stacks share the **`streamtube`** network, so `API_URL` is the API's Compose service name: **`API_URL=http://nestjs-api:3000`**. `nestjs-project/compose.yaml` owns the network (`networks.default.name: streamtube`) and `next-frontend/compose.yaml` joins it as `external: true` — so **the backend stack must be up before this one**, otherwise `docker compose up` fails with a missing-network error. Never use `localhost` or `host.docker.internal` here: inside a container `localhost` is the container itself.
 
 Media streaming will eventually come from Object Storage (S3/MinIO) — TBD.
 

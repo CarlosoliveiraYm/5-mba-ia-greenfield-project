@@ -1,6 +1,14 @@
 FROM node:25.6.0-slim
 
-RUN apt update && apt install -y procps curl
+# ffmpeg is needed by the video worker and by the test fixture generator,
+# which runs wherever tests run — hence the shared dev image, not a worker-only one.
+RUN apt update && apt install -y procps curl ffmpeg
+
+# The worker's scratch space (WORKER_SCRATCH_DIR). Created here, as root, and
+# owned by `node`: Docker seeds a fresh named volume from the image's directory,
+# including its ownership, so mounting `worker-scratch` over this keeps it
+# writable by the unprivileged user the container runs as.
+RUN mkdir -p /tmp/streamtube && chown node:node /tmp/streamtube
 
 WORKDIR /home/node/app
 

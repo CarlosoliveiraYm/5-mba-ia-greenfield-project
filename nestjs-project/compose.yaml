@@ -1,6 +1,6 @@
 services:
   nestjs-api:
-    build: 
+    build:
       context: .
       dockerfile: Dockerfile.dev
     ports:
@@ -12,6 +12,25 @@ services:
         condition: service_healthy
       mailpit:
         condition: service_started
+      minio:
+        condition: service_healthy
+
+  # FFmpeg processing runs here, not in nestjs-api, so encoding CPU pressure
+  # never competes with the API's event loop. Same image and bind mount, no
+  # published ports — it has no HTTP surface at all.
+  video-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    command: ["npm", "run", "start:worker"]
+    volumes:
+      - .:/home/node/app
+      - worker-scratch:/tmp/streamtube
+    depends_on:
+      db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
 
   db:
     image: postgres:17
@@ -21,6 +40,8 @@ services:
       - POSTGRES_USER=streamtube
       - POSTGRES_PASSWORD=streamtube
       - POSTGRES_DB=streamtube
+    volumes:
+      - db-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U streamtube"]
       interval: 5s
@@ -33,4 +54,72 @@ services:
       - "1025:1025"
       - "8025:8025"
 
+  # S3-compatible object storage for video files and thumbnails.
+  # MINIO_API_CORS_ALLOW_ORIGIN is cluster-wide: per-bucket CORS (`mc cors set`)
+  # is an AIStor-only feature, so on the open-source image this env var is the
+  # only lever for letting the browser PUT/GET directly against the API.
+  minio:
+    image: minio/minio
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=${S3_ACCESS_KEY_ID:-streamtube}
+      - MINIO_ROOT_PASSWORD=${S3_SECRET_ACCESS_KEY:-streamtube}
+      - MINIO_API_CORS_ALLOW_ORIGIN=${S3_CORS_ALLOW_ORIGIN:-http://localhost:3001}
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
 
+  # One-shot bootstrap: waits for MinIO and creates the bucket.
+  #
+  # It also *attempts* the AbortIncompleteMultipartUpload lifecycle rule, which
+  # MinIO RELEASE.2025-09-07 rejects (`mc ilm import` and the S3
+  # PutBucketLifecycleConfiguration API both answer "XML ... did not validate
+  # against our published schema"; a rule carrying only that action is dropped
+  # silently). The attempt is deliberately non-fatal so the bucket still gets
+  # created, and so a future MinIO that supports it picks the rule up with no
+  # change here. Losing it costs nothing today: this rule is only the backstop —
+  # the primary reaper is the tus store's own deleteExpired(), which the worker
+  # runs hourly (UPLOAD_SWEEP_CRON).
+  minio-init:
+    image: minio/mc
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      - S3_BUCKET=${S3_BUCKET:-streamtube-videos}
+      - S3_ACCESS_KEY_ID=${S3_ACCESS_KEY_ID:-streamtube}
+      - S3_SECRET_ACCESS_KEY=${S3_SECRET_ACCESS_KEY:-streamtube}
+    volumes:
+      - ./docker/minio:/etc/minio-init:ro
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${S3_ACCESS_KEY_ID} $${S3_SECRET_ACCESS_KEY} &&
+      mc mb --ignore-existing local/$${S3_BUCKET} &&
+      { mc ilm import local/$${S3_BUCKET} < /etc/minio-init/lifecycle.json ||
+        echo 'minio-init: WARNING this MinIO rejected the abort-incomplete-multipart lifecycle rule; the hourly sweep remains the primary reaper'; } &&
+      echo 'minio-init: bucket '$${S3_BUCKET}' ready'
+      "
+
+# Named volume so the database survives `docker compose down`. Without it Postgres
+# wrote to a throwaway anonymous volume and every teardown silently emptied the
+# database, forcing a `npm run migration:run` on the next startup.
+# To wipe it on purpose: `docker compose down -v`.
+volumes:
+  db-data:
+  minio-data:
+  worker-scratch:
+
+# Shared network for the whole StreamTube stack. This Compose project owns it;
+# next-frontend/compose.yaml joins the same network as `external`, which lets the
+# frontend reach the API by its Compose service name (http://nestjs-api:3000).
+# Consequence: start this stack before next-frontend.
+networks:
+  default:
+    name: streamtube

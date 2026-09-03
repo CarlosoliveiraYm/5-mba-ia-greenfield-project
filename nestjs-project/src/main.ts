@@ -1,32 +1,22 @@
 import { NestFactory } from '@nestjs/core';
 import { ConfigService } from '@nestjs/config';
 import type { ConfigType } from '@nestjs/config';
-import { ValidationPipe } from '@nestjs/common';
 import { SwaggerModule } from '@nestjs/swagger';
 import { AppModule } from './app.module';
-import { DomainExceptionFilter } from './common/filters/domain-exception.filter';
-import { ValidationExceptionFilter } from './common/filters/validation-exception.filter';
+import { configureApp } from './bootstrap';
 import swaggerConfig from './config/swagger.config';
 import { buildSwaggerDocument } from './swagger/swagger-document';
 import swaggerMetadata from './metadata.js';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // No body parser at creation time: the tus endpoint has to see the raw chunk
+  // stream, and Express's JSON parser would consume it first. `configureApp`
+  // mounts tus and then re-adds the parsers, in that order.
+  const app = await NestFactory.create(AppModule, { bodyParser: false });
   const configService = app.get(ConfigService);
   const port = configService.get<number>('app.port') ?? 3000;
 
-  app.useGlobalPipes(
-    new ValidationPipe({
-      whitelist: true,
-      forbidNonWhitelisted: true,
-      transform: true,
-    }),
-  );
-
-  app.useGlobalFilters(
-    new DomainExceptionFilter(),
-    new ValidationExceptionFilter(),
-  );
+  configureApp(app);
 
   const swagger = app.get<ConfigType<typeof swaggerConfig>>(swaggerConfig.KEY);
 

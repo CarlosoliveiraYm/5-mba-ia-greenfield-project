@@ -379,13 +379,13 @@ Deliver the complete authentication lifecycle — registration with automatic ch
 
 ### SI-02.13 — Rate Limiting on Auth Endpoints
 
-**Description:** Configure `@nestjs/throttler` to enforce a rate limit of 10 requests per minute on all auth endpoints. Non-auth endpoints are excluded from throttling.
+**Description:** Configure `@nestjs/throttler` to enforce a rate limit of 10 requests per minute per IP. The guard is registered globally; endpoints that must not be throttled opt out with `@SkipThrottle()`.
 
 **Technical actions:**
 
-- Configure `ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }])` in `AuthModule` imports — scoped to auth endpoints only, not globally
-- Register `ThrottlerGuard` as an `APP_GUARD` in `AuthModule` providers — applies to all auth endpoints. Since `ThrottlerModule` is imported in `AuthModule` (not `AppModule`), the guard only activates for routes handled by `AuthController`
-- Add `@SkipThrottle()` decorator to `AppController` to ensure the health endpoint and any non-auth routes are exempt from rate limiting even if the guard scope changes in the future
+- Configure `ThrottlerModule.forRoot([{ ttl: 60000, limit: 10 }])` in `AuthModule` imports — `AuthModule` is where the limit is declared, but the limit itself is not scoped by that choice
+- Register `ThrottlerGuard` as an `APP_GUARD` in `AuthModule` providers. **`APP_GUARD` providers are global across the whole application regardless of the module that declares them** — declaring it inside `AuthModule` does not confine it to `AuthController`. Every route in the app is therefore throttled unless it opts out
+- Add `@SkipThrottle()` to `AppController` — this is the opt-out mechanism, not a belt-and-braces precaution: without it the health endpoint would be rate-limited too. Any future controller that must not inherit the 10 req/min window needs the same decorator (Phase 03's `GET /videos/:publicId` is the first such case, for TD-09's polling contract)
 
 **Tests:**
 
@@ -398,7 +398,7 @@ Deliver the complete authentication lifecycle — registration with automatic ch
 **Acceptance criteria:**
 
 - The 11th request to any auth endpoint within a 60-second window returns 429 Too Many Requests
-- Non-auth endpoints (e.g., `GET /`) are not rate-limited and continue to respond normally regardless of auth endpoint throttling
+- `GET /` is not rate-limited and continues to respond normally — because `AppController` carries `@SkipThrottle()`, not because the guard's scope excludes it
 - Rate limiting is per-IP (default `ThrottlerGuard` behavior)
 
 ---
