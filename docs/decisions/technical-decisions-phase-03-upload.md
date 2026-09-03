@@ -53,6 +53,8 @@ _Subprojects in scope:_
 
 **Decision:** A: MinIO container + AWS SDK v3
 
+**Libraries:** @aws-sdk/client-s3, @aws-sdk/s3-request-presigner
+
 **Revisions:**
 - 2026-09-02 — Two `S3Client` instances instead of one: `client` on `S3_ENDPOINT` (internal) for reads
   and writes, `presignClient` on `S3_PUBLIC_ENDPOINT` for delivery URLs, plus a third access
@@ -94,6 +96,8 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (`pg-boss`)** — the transactional enqueue is a genuine correctness win for the draft-then-process flow, and at this workload (a few long jobs, never a burst) the throughput ceiling that motivates Redis is nowhere near. The cost is a hand-rolled Nest module, which is bounded and one-off; the cost of Option B is a permanent extra container for a single consumer. If Redis later enters the stack for other reasons, the queue port keeps the migration contained.
 
 **Decision:** A (`pg-boss`)
+
+**Libraries:** pg-boss
 
 **Revisions:**
 - 2026-09-02 — Recorded that `pg-boss@12` is ESM-only, matching `@tus/*`; both are loaded through async
@@ -138,6 +142,8 @@ _Subprojects in scope:_
 **Recommendation:** **Option A (tus)** — resumability is a stated requirement, and tus is the only option that provides it as a maintained standard rather than as bespoke orchestration. The ESM/CJS friction is real but bounded (a dynamic `import()` in one provider factory plus a Jest transform setting), and it is a smaller ongoing cost than owning the multipart state machine of Option B. Option C fails the requirement outright.
 
 **Decision:** A (tus)
+
+**Libraries:** @tus/server, @tus/s3-store, tus-js-client
 
 **Revisions:**
 - 2026-09-02 — The S3 object key is decided by a `namingFunction` returning a flat `<uuid>.<ext>`, and

@@ -128,4 +128,109 @@ describe('exportSpec (integration)', () => {
       }
     }
   });
+
+  describe('videos endpoints (Phase 03)', () => {
+    const videoPaths = [
+      ['/videos/upload-ticket', 'post'],
+      ['/videos/{publicId}', 'get'],
+      ['/videos/{publicId}/playback', 'get'],
+      ['/videos/{publicId}/download', 'get'],
+    ] as const;
+
+    const paths = () =>
+      document.paths as Record<string, Record<string, Record<string, unknown>>>;
+
+    it.each(videoPaths)('documents %s %s', (path, method) => {
+      expect(paths()[path]?.[method]).toBeDefined();
+    });
+
+    it.each(videoPaths)(
+      'requires the access token on %s %s',
+      (path, method) => {
+        const security = paths()[path][method].security as Record<
+          string,
+          unknown
+        >[];
+
+        expect(security.some((req) => 'access-token' in req)).toBe(true);
+      },
+    );
+
+    it('documents every predictable error status of the delivery endpoints', () => {
+      for (const path of [
+        '/videos/{publicId}/playback',
+        '/videos/{publicId}/download',
+      ]) {
+        const responses = paths()[path].get.responses as Record<
+          string,
+          unknown
+        >;
+        expect(Object.keys(responses).sort()).toEqual(
+          expect.arrayContaining(['200', '401', '404', '409']),
+        );
+      }
+    });
+
+    it('exposes VideoStatus and VideoFailureReason as enum schemas', () => {
+      const schemas = (document.components as Record<string, unknown>)
+        .schemas as Record<string, Record<string, unknown>>;
+
+      // Named enums, so a consumer generating types gets the literal union
+      // rather than a bare `string`.
+      expect(schemas.VideoStatus).toMatchObject({
+        type: 'string',
+        enum: ['draft', 'uploading', 'processing', 'ready', 'failed'],
+      });
+      expect(schemas.VideoFailureReason).toMatchObject({ type: 'string' });
+      expect(schemas.VideoFailureReason.enum).toEqual(
+        expect.arrayContaining([
+          'NO_VIDEO_STREAM',
+          'UNSUPPORTED_CONTAINER',
+          'UNSUPPORTED_VIDEO_CODEC',
+          'PROBE_FAILED',
+          'PROCESSING_FAILED',
+          'UPLOAD_ABANDONED',
+        ]),
+      );
+    });
+
+    it('never exposes an internal identifier through VideoResponseDto', () => {
+      const schemas = (document.components as Record<string, unknown>)
+        .schemas as Record<string, Record<string, unknown>>;
+      const properties = Object.keys(
+        schemas.VideoResponseDto.properties as Record<string, unknown>,
+      );
+
+      expect(properties).not.toEqual(
+        expect.arrayContaining([
+          'id',
+          'channel_id',
+          'upload_id',
+          'storage_key',
+        ]),
+      );
+    });
+
+    it('contains no /uploads path — the tus endpoint is raw Express middleware', () => {
+      // Deliberate and documented, not an oversight: the Swagger plugin only
+      // sees Nest controllers, so the frontend reaches tus through
+      // NEXT_PUBLIC_UPLOAD_URL rather than generated types.
+      expect(
+        Object.keys(paths()).filter((path) => path.startsWith('/uploads')),
+      ).toEqual([]);
+    });
+  });
+
+  describe('determinism', () => {
+    it('produces a byte-identical document on a second export', async () => {
+      const secondPath = join(tmpdir(), `openapi-test-2-${Date.now()}.json`);
+      await exportSpec(secondPath);
+
+      // The committed artifact is safe for a CI freshness check only if the
+      // export has no run-to-run variation.
+      expect(readFileSync(secondPath, 'utf-8')).toBe(
+        readFileSync(outputPath, 'utf-8'),
+      );
+    }, 30_000);
+  });
 });
