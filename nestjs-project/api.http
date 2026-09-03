@@ -14,6 +14,23 @@
 @confirmationToken = <token do e-mail de confirmacao>
 @resetToken = <token do e-mail de reset>
 
+# Ticket de upload — capturado automaticamente do response de "Gerar ticket de upload".
+# É um JWT com scope "upload", DIFERENTE do @accessToken: só ele é aceito pelo endpoint /uploads.
+@uploadTicket = {{uploadTicket.response.body.$.ticket}}
+
+# Local do upload — capturado automaticamente do header Location do "Criar upload (tus)".
+# Já é a URL completa (ex.: http://localhost:3000/uploads/<uuid>.mp4).
+@uploadLocation = {{createUpload.response.headers.Location}}
+
+# Tamanho em bytes do arquivo de teste usado no upload — ver instruções na seção
+# "UPLOAD DE VÍDEO" abaixo para gerar o arquivo e obter esse valor.
+@sampleFileSize = 65536
+
+# public_id do vídeo a consultar — não existe endpoint de listagem neste backend,
+# então após o upload é preciso pegar o valor no banco:
+#   docker compose exec db psql -U streamtube -d streamtube -c "SELECT public_id, status FROM videos ORDER BY created_at DESC LIMIT 1;"
+@videoPublicId = <cole aqui o public_id do vídeo>
+
 
 ###
 # ─────────────────────────────────────────────
@@ -89,8 +106,87 @@ GET {{baseUrl}}/auth/me
 Authorization: Bearer {{accessToken}}
 
 
-### 7. Logout — revoga todos os refresh tokens do usuário
-POST {{baseUrl}}/auth/logout
+###
+# ─────────────────────────────────────────────
+# UPLOAD DE VÍDEO (protocolo tus 1.0.0)
+# ─────────────────────────────────────────────
+# Endpoint /uploads é middleware Express puro (fora do Nest): não usa o
+# @accessToken nem o envelope de erro JSON padrão — erros vêm como texto
+# plano "CODE: mensagem". Autentica só com o @uploadTicket obtido abaixo.
+#
+# Antes de testar o upload, gere um arquivo de vídeo pequeno dentro do
+# container (ffmpeg já está instalado na imagem) — o bind mount grava o
+# arquivo direto em nestjs-project/tmp/sample.mp4 no host:
+#
+#   docker compose exec nestjs-api sh -c "mkdir -p tmp && ffmpeg -y \
+#     -f lavfi -i testsrc=duration=2:size=320x240:rate=10 \
+#     -f lavfi -i sine -c:v libx264 -c:a aac -shortest tmp/sample.mp4"
+#
+# Depois rode `stat -c%s nestjs-project/tmp/sample.mp4` e atualize
+# @sampleFileSize acima com o tamanho exato (necessário no header
+# Upload-Length e no Upload-Offset final do PATCH).
+
+### 7. Gerar ticket de upload — token com scope "upload", válido por 2h
+# @name uploadTicket
+POST {{baseUrl}}/videos/upload-ticket
+Authorization: Bearer {{accessToken}}
+
+
+### 8. Discovery do protocolo tus (sem autenticação)
+OPTIONS {{baseUrl}}/uploads
+Tus-Resumable: 1.0.0
+
+
+### 9. Criar o upload — cria também o Video em status "draft"
+# Location do response vira @uploadLocation automaticamente.
+# Upload-Metadata: pares "chave valor-em-base64" separados por vírgula
+# (aqui: filename=sample.mp4, filetype=video/mp4)
+# @name createUpload
+POST {{baseUrl}}/uploads
+Authorization: Bearer {{uploadTicket}}
+Tus-Resumable: 1.0.0
+Upload-Length: {{sampleFileSize}}
+Upload-Metadata: filename c2FtcGxlLm1wNA==,filetype dmlkZW8vbXA0
+
+
+### 10. Consultar offset atual do upload (útil para retomar depois de uma queda)
+HEAD {{uploadLocation}}
+Authorization: Bearer {{uploadTicket}}
+Tus-Resumable: 1.0.0
+
+
+### 11. Enviar o arquivo — um único PATCH cobrindo o arquivo inteiro (offset 0).
+# Ao completar, o Video passa draft → uploading → processing e um job é
+# enfileirado no pg-boss para o video-worker. Para testar retomada de upload,
+# divida em múltiplos PATCH ajustando Upload-Offset a cada chamada.
+PATCH {{uploadLocation}}
+Authorization: Bearer {{uploadTicket}}
+Tus-Resumable: 1.0.0
+Upload-Offset: 0
+Content-Type: application/offset+octet-stream
+
+< ./tmp/sample.mp4
+
+
+###
+# ─────────────────────────────────────────────
+# CONSULTA E REPRODUÇÃO DE VÍDEO
+# ─────────────────────────────────────────────
+# Cole o public_id do vídeo em @videoPublicId acima (ver instrução no topo
+# do arquivo) antes de rodar os 3 requests abaixo.
+
+### 12. Consultar status/metadados do vídeo — faça polling até status="ready"
+GET {{baseUrl}}/videos/{{videoPublicId}}
+Authorization: Bearer {{accessToken}}
+
+
+### 13. Obter URL de reprodução (presigned, streaming via Range) — só funciona com status="ready"
+GET {{baseUrl}}/videos/{{videoPublicId}}/playback
+Authorization: Bearer {{accessToken}}
+
+
+### 14. Obter URL de download (presigned, com Content-Disposition: attachment) — só funciona com status="ready"
+GET {{baseUrl}}/videos/{{videoPublicId}}/download
 Authorization: Bearer {{accessToken}}
 
 
@@ -99,7 +195,7 @@ Authorization: Bearer {{accessToken}}
 # RECUPERAÇÃO DE SENHA
 # ─────────────────────────────────────────────
 
-### 8. Solicitar redefinição de senha
+### 15. Solicitar redefinição de senha
 # Após a solicitação, consulte http://localhost:8025 para obter o token de reset
 POST {{baseUrl}}/auth/forgot-password
 Content-Type: {{contentType}}
@@ -109,7 +205,7 @@ Content-Type: {{contentType}}
 }
 
 
-### 9. Redefinir senha com token recebido
+### 16. Redefinir senha com token recebido
 # Cole o token do e-mail em @resetToken acima
 POST {{baseUrl}}/auth/reset-password
 Content-Type: {{contentType}}
@@ -118,3 +214,13 @@ Content-Type: {{contentType}}
   "token": "{{resetToken}}",
   "new_password": "new-password123"
 }
+
+
+###
+# ─────────────────────────────────────────────
+# LOGOUT
+# ─────────────────────────────────────────────
+
+### 17. Logout — revoga todos os refresh tokens do usuário
+POST {{baseUrl}}/auth/logout
+Authorization: Bearer {{accessToken}}

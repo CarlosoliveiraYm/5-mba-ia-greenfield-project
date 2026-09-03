@@ -1,12 +1,17 @@
 import { ArgumentsHost } from '@nestjs/common';
 import { DomainExceptionFilter } from './domain-exception.filter';
 import {
+  DomainException,
   EmailAlreadyExistsException,
   EmailNotConfirmedException,
   InvalidCredentialsException,
   InvalidTokenException,
+  InvalidUploadTicketException,
   TokenExpiredException,
   TokenReuseDetectedException,
+  UploadAlreadyInProgressException,
+  VideoNotFoundException,
+  VideoNotReadyException,
 } from '../exceptions/domain.exception';
 
 describe('DomainExceptionFilter', () => {
@@ -98,4 +103,46 @@ describe('DomainExceptionFilter', () => {
       message: expect.any(String),
     });
   });
+
+  const phase03Cases: [string, () => DomainException, number, string][] = [
+    [
+      'UploadAlreadyInProgressException',
+      () => new UploadAlreadyInProgressException(),
+      409,
+      'UPLOAD_ALREADY_IN_PROGRESS',
+    ],
+    [
+      'InvalidUploadTicketException',
+      () => new InvalidUploadTicketException(),
+      401,
+      'INVALID_UPLOAD_TICKET',
+    ],
+    [
+      'VideoNotFoundException',
+      () => new VideoNotFoundException(),
+      404,
+      'VIDEO_NOT_FOUND',
+    ],
+    [
+      'VideoNotReadyException',
+      () => new VideoNotReadyException(),
+      409,
+      'VIDEO_NOT_READY',
+    ],
+  ];
+
+  // A plain loop rather than `it.each`: Jest's tuple-table typings widen the
+  // row to `any`, which the lint rules reject.
+  for (const [name, build, statusCode, error] of phase03Cases) {
+    it(`maps ${name} to ${statusCode} with ${error}`, () => {
+      filter.catch(build(), mockHost);
+
+      expect(mockStatus).toHaveBeenCalledWith(statusCode);
+      expect(mockJson).toHaveBeenCalledWith({
+        statusCode,
+        error,
+        message: expect.any(String),
+      });
+    });
+  }
 });

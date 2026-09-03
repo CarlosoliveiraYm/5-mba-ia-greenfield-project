@@ -438,6 +438,248 @@
           "auth"
         ]
       }
+    },
+    "/videos/upload-ticket": {
+      "post": {
+        "description": "Mints the short-lived, upload-scoped token the browser presents to the tus endpoint, and returns the endpoint to send it to. Only one upload may be in flight per user at a time.",
+        "operationId": "VideosController_requestUploadTicket",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UploadTicketResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "UPLOAD_ALREADY_IN_PROGRESS — an upload is already in flight",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "access-token": []
+          }
+        ],
+        "summary": "Issue an upload ticket",
+        "tags": [
+          "videos"
+        ]
+      }
+    },
+    "/videos/{publicId}": {
+      "get": {
+        "description": "Returns the live processing status and metadata of a video the caller owns. Safe to poll: this endpoint is exempt from the global rate limit.",
+        "operationId": "VideosController_findOne",
+        "parameters": [
+          {
+            "name": "publicId",
+            "required": true,
+            "in": "path",
+            "description": "Opaque public identifier.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VideoResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "VIDEO_NOT_FOUND — unknown id, or a video the caller does not own (indistinguishable on purpose)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "access-token": []
+          }
+        ],
+        "summary": "Read a video",
+        "tags": [
+          "videos"
+        ]
+      }
+    },
+    "/videos/{publicId}/playback": {
+      "get": {
+        "description": "Returns a short-lived presigned URL the player streams from directly. The video bytes never transit this API; the URL serves HTTP Range, so playback starts without downloading the whole file.",
+        "operationId": "VideosController_getPlaybackUrl",
+        "parameters": [
+          {
+            "name": "publicId",
+            "required": true,
+            "in": "path",
+            "description": "Opaque public identifier.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SignedUrlResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "VIDEO_NOT_FOUND — unknown id, or not owned by the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VIDEO_NOT_READY — the video has not finished processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "access-token": []
+          }
+        ],
+        "summary": "Get a playback URL",
+        "tags": [
+          "videos"
+        ]
+      }
+    },
+    "/videos/{publicId}/download": {
+      "get": {
+        "description": "The same mechanism as playback, presigned with a Content-Disposition that makes the browser save the file under its original name.",
+        "operationId": "VideosController_getDownloadUrl",
+        "parameters": [
+          {
+            "name": "publicId",
+            "required": true,
+            "in": "path",
+            "description": "Opaque public identifier.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadUrlResponseDto"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Access token missing or invalid",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "VIDEO_NOT_FOUND — unknown id, or not owned by the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "VIDEO_NOT_READY — the video has not finished processing",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorEnvelope"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "access-token": []
+          }
+        ],
+        "summary": "Get a download URL",
+        "tags": [
+          "videos"
+        ]
+      }
     }
   },
   "info": {
@@ -480,6 +722,169 @@
       "ResetPasswordDto": {
         "type": "object",
         "properties": {}
+      },
+      "UploadTicketResponseDto": {
+        "type": "object",
+        "properties": {
+          "ticket": {
+            "type": "string",
+            "description": "Upload-scoped JWT. Presented in the Authorization header of every tus request."
+          },
+          "upload_url": {
+            "type": "string",
+            "description": "Browser-reachable tus endpoint.",
+            "example": "http://localhost:3000/uploads"
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "ticket",
+          "upload_url",
+          "expires_at"
+        ]
+      },
+      "VideoStatus": {
+        "type": "string",
+        "enum": [
+          "draft",
+          "uploading",
+          "processing",
+          "ready",
+          "failed"
+        ]
+      },
+      "VideoFailureReason": {
+        "type": "string",
+        "enum": [
+          "NO_VIDEO_STREAM",
+          "UNSUPPORTED_CONTAINER",
+          "UNSUPPORTED_VIDEO_CODEC",
+          "PROBE_FAILED",
+          "PROCESSING_FAILED",
+          "UPLOAD_ABANDONED"
+        ],
+        "description": "Set only when `status` is `failed`."
+      },
+      "VideoResponseDto": {
+        "type": "object",
+        "properties": {
+          "public_id": {
+            "type": "string",
+            "description": "Opaque 11-character public identifier."
+          },
+          "title": {
+            "type": "string"
+          },
+          "description": {
+            "type": "string",
+            "nullable": true
+          },
+          "status": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VideoStatus"
+              }
+            ]
+          },
+          "failure_reason": {
+            "nullable": true,
+            "description": "Set only when `status` is `failed`.",
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/VideoFailureReason"
+              }
+            ]
+          },
+          "duration_seconds": {
+            "type": "number",
+            "nullable": true
+          },
+          "width": {
+            "type": "number",
+            "nullable": true
+          },
+          "height": {
+            "type": "number",
+            "nullable": true
+          },
+          "original_filename": {
+            "type": "string"
+          },
+          "size_bytes": {
+            "type": "number",
+            "nullable": true
+          },
+          "thumbnail_url": {
+            "type": "string",
+            "nullable": true,
+            "description": "Presigned GET. Null until processing produces a thumbnail."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "public_id",
+          "title",
+          "description",
+          "status",
+          "failure_reason",
+          "duration_seconds",
+          "width",
+          "height",
+          "original_filename",
+          "size_bytes",
+          "thumbnail_url",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "SignedUrlResponseDto": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Presigned GET, valid for PRESIGNED_URL_EXPIRATION_SECONDS. Serves HTTP Range."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        },
+        "required": [
+          "url",
+          "expires_at"
+        ]
+      },
+      "DownloadUrlResponseDto": {
+        "type": "object",
+        "properties": {
+          "url": {
+            "type": "string",
+            "description": "Presigned GET, valid for PRESIGNED_URL_EXPIRATION_SECONDS. Serves HTTP Range."
+          },
+          "expires_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "filename": {
+            "type": "string",
+            "description": "The original uploaded filename."
+          }
+        },
+        "required": [
+          "url",
+          "expires_at",
+          "filename"
+        ]
       },
       "ApiErrorEnvelope": {
         "type": "object",

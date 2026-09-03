@@ -137,6 +137,91 @@ A test that constructs a `TypeOrmModule.forRoot`, opens a connection, or hits th
 
 Conventions for **how to write** each kind of test (mocking patterns, AAA structure, override strategies for global guards, etc.) live in `.claude/rules/nestjs-testing.md` and load when you edit a test file.
 
+## Delivery Endpoints Return URLs, Not Bytes
+
+`GET /videos/:publicId/playback` and `/download` return **JSON carrying a
+presigned URL**, never the video stream. The bytes go from object storage
+straight to the browser, so neither Node process is ever in the data plane, and
+HTTP Range, seeking and resumable downloads come from the storage layer for
+free.
+
+Two consequences to keep in mind when changing them:
+
+- Authorization is re-evaluated on **every issuance**, but a URL that has already
+  been issued stays valid until `PRESIGNED_URL_EXPIRATION_SECONDS` elapses. A
+  leaked URL cannot be revoked; shorten the window instead.
+- The URL is signed against `S3_PUBLIC_ENDPOINT`, because SigV4 covers the Host
+  header. Rewriting its origin invalidates the signature — a test running inside
+  a container cannot fetch a browser-signed URL, and must sign its own through
+  `StorageService.getInternalPresignedUrl`.
+
+## The `video-worker` Service
+
+`video-worker` is infrastructure and starts with the stack (`docker compose up -d`).
+It runs `src/main.worker.ts` against `WorkerModule` on a **standalone Nest
+application context** — `NestFactory.createApplicationContext`, no HTTP adapter,
+no published ports, no routes.
+
+- Read its logs with `docker compose logs video-worker` — it has no endpoint to
+  curl and no Swagger page.
+- `WorkerModule` must never import `AppModule`, `AuthModule`, `UploadsModule`, or
+  any controller. That boundary is the whole point: FFmpeg's CPU pressure must
+  not compete with the API's event loop. It imports `TusStoreModule` for the
+  store alone, never the tus `Server`.
+- It is the **only** process that supervises jobs and runs the pg-boss cron
+  scheduler (`QueueModule.register({ supervise: true, schedule: true })`); the
+  API is send-only.
+- Killing it leaves the API fully functional — uploads still complete and reach
+  `processing`, and jobs simply accumulate in `pgboss.job` until it returns.
+- `WORKER_SCRATCH_DIR` (`/tmp/streamtube`) is a named volume for remux working
+  files. The directory is created **in the image**, owned by `node`, because
+  Docker seeds a fresh named volume from the image's directory: without that the
+  volume is root-owned and the unprivileged process cannot write to it.
+- Scale it with `docker compose up -d --scale video-worker=2`; pg-boss hands each
+  job to exactly one worker.
+
+## The `/uploads` tus Endpoint
+
+`/uploads` is **raw Express middleware**, not a Nest controller. `src/bootstrap.ts`
+mounts it before `express.json()`, because the tus server has to read the raw
+chunk stream — which is also why the app is created with `{ bodyParser: false }`.
+
+Consequences, all deliberate:
+
+- The global `JwtAuthGuard` does **not** run on it. It authenticates with its own
+  upload ticket (`POST /videos/upload-ticket`), verified inside the tus hooks.
+- The `DomainExceptionFilter` does **not** run on it. It answers with
+  tus-protocol errors (`{ status_code, body }`), not the
+  `{ statusCode, error, message }` envelope the rest of the API uses.
+- It does **not** appear in `openapi.json` — the Swagger plugin only sees Nest
+  controllers. The frontend must reach it through `NEXT_PUBLIC_UPLOAD_URL`
+  rather than generated types.
+- Its CORS is configured through the tus `Server`'s own `allowedOrigins` /
+  `allowedHeaders` / `exposedHeaders` options, never `app.enableCors()`, which
+  never sees a path served by raw middleware.
+
+**E2E tests must use `configureApp(app)` from `src/bootstrap.ts`** rather than
+applying pipes and filters by hand: `Test.createTestingModule()` does not run
+`main.ts`, and the tus mount plus the body-parser ordering have to be identical
+in both.
+
+## Video Fixtures
+
+Tests that need a real video file generate one with `src/test/video-fixtures.ts`
+rather than reading a committed binary. **No media blob belongs in Git.**
+
+- `createTestVideo({ durationSeconds, width, height })` — H.264 + AAC, faststart
+- `createTrailingMoovVideo()` — MP4 with `moov` after `mdat`, to exercise the remux branch
+- `createUnsupportedCodecVideo()` — MPEG-4 Part 2, which the codec whitelist must reject
+- `cleanupTestVideos()` — removes the temp directory; call it in `afterAll`
+
+Assertions come from the **generation parameters**, so a fixture's duration and
+dimensions are known exactly. Files are written under `os.tmpdir()` and memoized
+per Jest worker, so `git status` stays clean after a full run and the one-to-two
+second encode is not repeated per test. `ffmpeg`/`ffprobe` are installed in
+`Dockerfile.dev`, which both `nestjs-api` and the worker build from — the
+generator has to run wherever tests run, not only in the worker.
+
 ## Jest Configuration
 
 These settings are required in `package.json` (jest config) and `test/jest-e2e.json` for the project's tests to work correctly:
